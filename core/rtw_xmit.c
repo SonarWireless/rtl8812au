@@ -4410,6 +4410,7 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	struct xmit_frame		*pmgntframe;
 	struct mlme_ext_priv	*pmlmeext = &(padapter->mlmeextpriv);
 	struct xmit_priv	*pxmitpriv = &(padapter->xmitpriv);
+	struct registry_priv	*pregpriv = &(padapter->registrypriv);
 	unsigned char	*pframe;
 	int len = skb->len;
 
@@ -4484,22 +4485,58 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
 	_rtw_pktfile_read(&pktfile, pframe, len);
 
-	// Setup attribs for default Mgmt vs Data frame
+	/*
+		The following (original) code passage is generally causing problems for
+		default injected frames.
+
+		In v5.2.20, the injection code basically always overwrote
+		update_*_attrib() and set either a default MGN_1M rate, or let radiotap
+		specify something else more specific. Thus frames were 1Mbps by default,
+		and while slow, were ultimately consumable by many STAs.
+
+		In newest code, if the injection frame is a data type, it will by default
+		use a VHT data rate.  This is a drastically different default than
+		v5.2.20, and makes the injected data frames unreadable by non-VHT
+		STAs.
+
+		So we are going to patch back in the default behavor, but provide a
+		module parameter to disable the 1mbps default, in case it's needed in
+		other ways.
+
+	*/
 	pwlanhdr = (struct rtw_ieee80211_hdr *)pframe;
-	frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
-	if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
+	pattrib = &pmgntframe->attrib;
 
-		pattrib = &pmgntframe->attrib;
-		update_monitor_frame_attrib(padapter, pattrib);
+	if (pregpriv->monitor_disable_1m) {
 
-		if (is_broadcast_mac_addr(pwlanhdr->addr3) || is_broadcast_mac_addr(pwlanhdr->addr1))
-			pattrib->rate = MGN_24M;
+		// ORIGINAL: Setup attribs for default Mgmt vs Data frame
+		frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
+		if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
+
+			update_monitor_frame_attrib(padapter, pattrib);
+
+			if (is_broadcast_mac_addr(pwlanhdr->addr3) || is_broadcast_mac_addr(pwlanhdr->addr1))
+				pattrib->rate = MGN_24M;
+		} else {
+			update_mgntframe_attrib(padapter, pattrib);
+		}
 
 	} else {
+		// Use v5.2.20 default 1Mbps rate setup by default
 
-		pattrib = &pmgntframe->attrib;
 		update_mgntframe_attrib(padapter, pattrib);
 
+		pattrib->rate = MGN_1M;
+
+		// Note: these are currently already done in update_mgmtframe_attrib():
+		//
+		// pattrib->bwmode = CHANNEL_WIDTH_20;
+		// pattrib->ch_offset = HAL_PRIME_CHNL_OFFSET_DONT_CARE;
+		// pattrib->sgi = _FALSE;
+		// pattrib->ht_en = _FALSE;
+
+		pattrib->ldpc = _FALSE;
+		pattrib->stbc = 0;
 	}
 
 	pattrib->pktlen = len;
