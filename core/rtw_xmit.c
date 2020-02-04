@@ -4399,7 +4399,7 @@ static void do_queue_select(_adapter	*padapter, struct pkt_attrib *pattrib)
  *	0	success, hardware will handle this xmit frame(packet)
  *	<0	fail
  */
- #if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(2, 6, 24))
 s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 {
 	u16 frame_ctl;
@@ -4424,8 +4424,10 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 
 	rtw_mstat_update(MSTAT_TYPE_SKB, MSTAT_ALLOC_SUCCESS, skb->truesize);
 
-	if (unlikely(skb->len < sizeof(struct ieee80211_radiotap_header)))
+	if (unlikely(skb->len < sizeof(struct ieee80211_radiotap_header))) {
+		RTW_WARN("%s skb len less than radiotap header: %u", __func__, skb->len);
 		goto fail;
+	}
 
 	_rtw_open_pktfile((_pkt *)skb, &pktfile);
 
@@ -4434,14 +4436,20 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	rtap_hdr = (struct ieee80211_radiotap_header*)(rtap_buf);
 	rtap_len = ieee80211_get_radiotap_len(rtap_buf);
 
-	if (unlikely(rtap_hdr->it_version))
+	if (unlikely(rtap_hdr->it_version)) {
+		RTW_WARN("%s radiotap header wrong version: %u", __func__, rtap_hdr->it_version);
 		goto fail;
+	}
 
-	if (unlikely(skb->len < rtap_len))
+	if (unlikely(skb->len < rtap_len)) {
+		RTW_WARN("%s skb len less than radiotap len: %u vs %u", __func__, skb->len, rtap_len);
 		goto fail;
+	}
 
-	if (unlikely(rtap_len < sizeof(struct ieee80211_radiotap_header)))
+	if (unlikely(rtap_len < sizeof(struct ieee80211_radiotap_header))) {
+		RTW_WARN("%s radiotap len less than radiotap header: %u", __func__, rtap_len);
 		goto fail;
+	}
 
 	len -= sizeof(struct ieee80211_radiotap_header);
 	rtap_remain = rtap_len - sizeof(struct ieee80211_radiotap_header);
@@ -4456,16 +4464,6 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	// so we can directly apply overrides rather than cache all the values into
 	// variables and apply them later.
 
-	// In just a bit we will attempt to take a pointer to the wlan hdr.  If the remaining bytes
-	// are less than a full header, we will technically be reading random bytes.  So this is a
-	// guard check to ensure there is a full minimum frame to read before we alloc and proceed
-	// to read.
-	if (unlikely(len < sizeof(struct rtw_ieee80211_hdr))) {
-		goto fail;
-	}
-
-	// Process rest of frame
-
 	// v5.2.20 had an allocation wrapper (monitor_alloc_mgtxmitframe) that performed a few
 	// tries to allocate an xmit frame before giving up.  This can be beneficial when there
 	// is a rapid-fire sequence of injected frames. Without it, frames can be randomly
@@ -4478,8 +4476,10 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 		rtw_udelay_os(alloc_delay);
 		alloc_delay += alloc_delay/2;
 	}
-	if (pmgntframe == NULL)
+	if (pmgntframe == NULL) {
+		RTW_WARN("%s alloc mgt xmit frame failed", __func__);
 		goto fail;
+	}
 
 	_rtw_memset(pmgntframe->buf_addr, 0, WLANHDR_OFFSET + TXDESC_OFFSET);
 	pframe = (u8 *)(pmgntframe->buf_addr) + TXDESC_OFFSET;
@@ -4510,7 +4510,14 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 	if (pregpriv->monitor_disable_1m) {
 
 		// ORIGINAL: Setup attribs for default Mgmt vs Data frame
-		frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
+
+		// Make sure we have enough to read:
+		if (unlikely(len < sizeof(struct rtw_ieee80211_hdr_3addr))) {
+			frame_ctl = 0;
+		} else {
+			frame_ctl = le16_to_cpu(pwlanhdr->frame_ctl);
+		}
+
 		if ((frame_ctl & RTW_IEEE80211_FCTL_FTYPE) == RTW_IEEE80211_FTYPE_DATA) {
 
 			update_monitor_frame_attrib(padapter, pattrib);
@@ -4620,8 +4627,11 @@ s32 rtw_monitor_xmit_entry(struct sk_buff *skb, struct net_device *ndev)
 					pattrib->retry_ctrl = _TRUE; // Note; already _FALSE by default
 
 				if (txflags & 0x0010) { // Use preconfigured seq num
-					// NOTE: this is currently ignored due to qos_en=_FALSE and HW seq num override
-					pattrib->seqnum = GetSequence(pwlanhdr);
+					// Make sure there is enough header to actually have a sequence number
+					if (len >= sizeof(struct rtw_ieee80211_hdr_3addr)) {
+						// NOTE: this is currently ignored due to qos_en=_FALSE and HW seq num override
+						pattrib->seqnum = GetSequence(pwlanhdr);
+					}
 				}
 
 				break;
